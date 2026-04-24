@@ -111,21 +111,6 @@ Environment variables:
 
 The old `ENDEAVOUR_SSH_HOST` and `ENDEAVOUR_PANEL_PORT` names are still supported for backward compatibility.
 
-## Publish To GitHub
-
-If GitHub CLI is installed and authenticated:
-
-```bash
-gh repo create linux-remote-control-panel --public --source . --remote origin --push
-```
-
-Without GitHub CLI:
-
-```bash
-git remote add origin https://github.com/YOUR_USER/linux-remote-control-panel.git
-git branch -M main
-git push -u origin main
-```
 
 ## License
 
