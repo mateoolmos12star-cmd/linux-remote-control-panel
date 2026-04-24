@@ -176,6 +176,47 @@ def remote_session_env():
     }
 
 
+def desktop_shortcut():
+    if os.name != "nt":
+        raise RuntimeError("La creacion del acceso directo desde el panel esta disponible solo en Windows.")
+    desktop = Path.home() / "Desktop"
+    shortcut = desktop / "Linux Remote Control Panel.lnk"
+    target = ROOT / "launch-endeavour-panel.vbs"
+    icon = ROOT / "tux.ico"
+    if not target.exists():
+        raise RuntimeError("No encontre el lanzador del panel para crear el acceso directo.")
+    powershell = f"""
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut({str(shortcut)!r})
+$shortcut.TargetPath = {str(target)!r}
+$shortcut.WorkingDirectory = {str(ROOT)!r}
+$shortcut.Description = 'Abrir Linux Remote Control Panel'
+if (Test-Path -LiteralPath {str(icon)!r}) {{
+  $shortcut.IconLocation = {f'{icon},0'!r}
+}}
+$shortcut.Save()
+"""
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            powershell,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        startupinfo=hidden_startupinfo(),
+        creationflags=CREATE_NO_WINDOW,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout or "No pude crear el acceso directo.").strip())
+    return state_payload({"result": {"reply": f"Acceso directo creado en {shortcut}"}})
+
+
 class TerminalSession:
     def __init__(self, host):
         self.host = host
@@ -881,6 +922,8 @@ def send_keys(title, keys):
 
 def remote_action(action, body=None):
     body = body or {}
+    if action == "desktop-shortcut":
+        return desktop_shortcut()
     if action == "terminal-open":
         return terminal_open(body.get("cols", 120), body.get("rows", 34))
     if action == "terminal-read":

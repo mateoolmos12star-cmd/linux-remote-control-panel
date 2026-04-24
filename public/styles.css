@@ -145,7 +145,17 @@ h1 {
   gap: 8px;
 }
 
+.system-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
 .terminal-actions button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.system-actions button {
   min-height: 34px;
   padding: 0 12px;
 }
