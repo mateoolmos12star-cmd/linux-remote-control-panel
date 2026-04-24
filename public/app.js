@@ -34,11 +34,19 @@ const copySource = document.querySelector("#copySource");
 const copyDestination = document.querySelector("#copyDestination");
 const copyToRemoteButton = document.querySelector("#copyToRemoteButton");
 const copyFromRemoteButton = document.querySelector("#copyFromRemoteButton");
+const terminalViewport = document.querySelector("#terminalViewport");
+const terminalInput = document.querySelector("#terminalInput");
+const terminalOpenButton = document.querySelector("#terminalOpenButton");
+const terminalClearButton = document.querySelector("#terminalClearButton");
+const terminalCloseButton = document.querySelector("#terminalCloseButton");
+const terminalSendButton = document.querySelector("#terminalSendButton");
 
-let state = { messages: [], tasks: [], remoteHost: "remote-linux", apps: [], youtubeResults: [], media: null };
+let state = { messages: [], tasks: [], remoteHost: "remote-linux", apps: [], youtubeResults: [], media: null, terminalOpen: false };
 let apps = [];
 let videoResults = [];
 let mediaPoll = null;
+let terminalPoll = null;
+let terminalBuffer = "";
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => {
@@ -90,6 +98,7 @@ function render() {
   if (state.files) renderFiles();
   if (state.system) renderSystem();
   if (state.audioSinks) renderAudioSinks();
+  renderTerminalState();
 }
 
 async function loadState() {
@@ -101,6 +110,31 @@ async function loadState() {
 function appendLocalMessage(content) {
   state.messages.push({ role: "assistant", content });
   renderMessages();
+}
+
+function normalizeTerminal(text) {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\u001b\][^\u0007]*(\u0007|\u001b\\)/g, "")
+    .replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "")
+    .replace(/\u001b./g, "")
+    .replace(/\u0008/g, "");
+}
+
+function appendTerminalOutput(text) {
+  const clean = normalizeTerminal(text);
+  if (!clean) return;
+  terminalBuffer = `${terminalBuffer}${clean}`.slice(-60000);
+  terminalViewport.textContent = terminalBuffer;
+  terminalViewport.scrollTop = terminalViewport.scrollHeight;
+}
+
+function renderTerminalState() {
+  terminalViewport.dataset.open = state.terminalOpen ? "1" : "0";
+  terminalInput.disabled = !state.terminalOpen;
+  terminalSendButton.disabled = !state.terminalOpen;
+  terminalCloseButton.disabled = !state.terminalOpen;
 }
 
 async function runAction(action, payload = {}, button = null) {
@@ -120,6 +154,27 @@ async function runAction(action, payload = {}, button = null) {
     render();
   } catch (error) {
     appendLocalMessage(`No pude ejecutar la accion: ${error.message}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function terminalAction(action, payload = {}, button = null) {
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`/api/remote/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Error desconocido");
+    state = { ...state, ...data };
+    if (data.terminal?.output) appendTerminalOutput(data.terminal.output);
+    if (typeof data.terminal?.open === "boolean") state.terminalOpen = data.terminal.open;
+    render();
+  } catch (error) {
+    appendLocalMessage(`No pude usar la terminal remota: ${error.message}`);
   } finally {
     if (button) button.disabled = false;
   }
@@ -337,5 +392,143 @@ copyFromRemoteButton.addEventListener("click", () => {
   runAction("copy-from-remote", { source: copySource.value, destination: copyDestination.value }, copyFromRemoteButton);
 });
 
+function terminalRows() {
+  return Math.max(12, Math.floor(terminalViewport.clientHeight / 19));
+}
+
+function terminalCols() {
+  return Math.max(40, Math.floor(terminalViewport.clientWidth / 8.8));
+}
+
+async function pollTerminal() {
+  if (!state.terminalOpen) return;
+  await terminalAction("terminal-read");
+}
+
+async function sendTerminalText(text, clearInput = false) {
+  if (!text) return;
+  await terminalAction("terminal-write", { text });
+  if (clearInput) terminalInput.value = "";
+}
+
+terminalOpenButton.addEventListener("click", async () => {
+  terminalViewport.focus();
+  await terminalAction("terminal-open", { cols: terminalCols(), rows: terminalRows() }, terminalOpenButton);
+});
+
+terminalClearButton.addEventListener("click", () => {
+  terminalBuffer = "";
+  terminalViewport.textContent = "";
+  terminalViewport.focus();
+});
+
+terminalCloseButton.addEventListener("click", async () => {
+  await terminalAction("terminal-close", {}, terminalCloseButton);
+});
+
+terminalSendButton.addEventListener("click", () => sendTerminalText(`${terminalInput.value}\n`, true));
+
+terminalInput.addEventListener("keydown", async (event) => {
+  if (!state.terminalOpen) return;
+  if (event.key === "Enter") {
+    event.preventDefault();
+    await sendTerminalText(`${terminalInput.value}\n`, true);
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    await sendTerminalText("\u001b[A");
+    return;
+  }
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    await sendTerminalText("\u001b[B");
+    return;
+  }
+  if (event.key === "Tab") {
+    event.preventDefault();
+    await sendTerminalText("\t");
+    return;
+  }
+  if (event.ctrlKey && event.key.toLowerCase() === "c") {
+    event.preventDefault();
+    await sendTerminalText("\u0003");
+    return;
+  }
+  if (event.ctrlKey && event.key.toLowerCase() === "l") {
+    event.preventDefault();
+    terminalBuffer = "";
+    terminalViewport.textContent = "";
+    await sendTerminalText("\u000c");
+  }
+});
+
+terminalViewport.addEventListener("click", () => terminalInput.focus());
+
+terminalViewport.addEventListener("keydown", async (event) => {
+  if (!state.terminalOpen) return;
+  if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    await sendTerminalText(event.key);
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    await sendTerminalText("\n");
+    return;
+  }
+  if (event.key === "Backspace") {
+    event.preventDefault();
+    await sendTerminalText("\u007f");
+    return;
+  }
+  if (event.key === "Tab") {
+    event.preventDefault();
+    await sendTerminalText("\t");
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    await sendTerminalText("\u001b[A");
+    return;
+  }
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    await sendTerminalText("\u001b[B");
+    return;
+  }
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    await sendTerminalText("\u001b[D");
+    return;
+  }
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    await sendTerminalText("\u001b[C");
+    return;
+  }
+  if (event.ctrlKey && event.key.toLowerCase() === "c") {
+    event.preventDefault();
+    await sendTerminalText("\u0003");
+    return;
+  }
+  if (event.ctrlKey && event.key.toLowerCase() === "l") {
+    event.preventDefault();
+    terminalBuffer = "";
+    terminalViewport.textContent = "";
+    await sendTerminalText("\u000c");
+  }
+});
+
+document.querySelectorAll("[data-terminal-seq]").forEach((button) => {
+  button.addEventListener("click", () => sendTerminalText(button.dataset.terminalSeq));
+});
+
+window.addEventListener("resize", () => {
+  if (!state.terminalOpen) return;
+  terminalAction("terminal-resize", { cols: terminalCols(), rows: terminalRows() });
+});
+
 loadState();
 mediaPoll = setInterval(() => runAction("media-status"), 12000);
+terminalPoll = setInterval(pollTerminal, 900);

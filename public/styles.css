@@ -140,6 +140,16 @@ h1 {
   font-size: 13px;
 }
 
+.terminal-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.terminal-actions button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
 .button-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -335,6 +345,67 @@ button:disabled {
   display: grid;
   gap: 12px;
   padding: 12px;
+}
+
+.terminal-shell {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.terminal-viewport {
+  min-height: 320px;
+  max-height: 460px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(8, 11, 10, 0.96), rgba(14, 18, 15, 0.98)),
+    repeating-linear-gradient(180deg, rgba(98, 210, 111, 0.03) 0 1px, transparent 1px 22px);
+  padding: 14px;
+  color: #d9fdd6;
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  outline: none;
+}
+
+.terminal-viewport[data-open="0"] {
+  color: var(--muted);
+}
+
+.terminal-entry {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 92px;
+  gap: 10px;
+  align-items: center;
+}
+
+.terminal-prompt {
+  color: var(--accent);
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-weight: 700;
+}
+
+.terminal-entry input {
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  outline: none;
+  color: var(--ink);
+  background: #0f1210;
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+}
+
+.terminal-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
 }
 
 #remoteScreen {

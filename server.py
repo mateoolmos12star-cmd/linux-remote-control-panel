@@ -5,6 +5,8 @@ import os
 import re
 import shlex
 import subprocess
+import threading
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -80,6 +82,8 @@ messages = [
     }
 ]
 tasks = []
+terminal_sessions = {}
+terminal_sessions_lock = threading.Lock()
 
 
 def now():
@@ -120,7 +124,10 @@ def state_payload(extra=None):
         "messages": messages,
         "tasks": tasks,
         "remoteHost": REMOTE_HOST,
+        "terminalOpen": False,
     }
+    with terminal_sessions_lock:
+        payload["terminalOpen"] = REMOTE_HOST in terminal_sessions and terminal_sessions[REMOTE_HOST].alive
     if extra:
         payload.update(extra)
     return payload
@@ -167,6 +174,122 @@ def remote_session_env():
         "XDG_RUNTIME_DIR": REMOTE_XDG_RUNTIME_DIR,
         "DBUS_SESSION_BUS_ADDRESS": REMOTE_DBUS_SESSION_BUS_ADDRESS,
     }
+
+
+class TerminalSession:
+    def __init__(self, host):
+        self.host = host
+        self.client = paramiko_client()
+        self.channel = self.client.invoke_shell(term="xterm-256color", width=120, height=34)
+        self.channel.settimeout(0.0)
+        self.buffer = ""
+        self.lock = threading.Lock()
+        self.alive = True
+        self.last_used_at = time.time()
+        time.sleep(0.15)
+        self._pump()
+
+    def _pump(self):
+        if not self.alive:
+            return ""
+        chunks = []
+        while self.channel.recv_ready():
+            data = self.channel.recv(4096)
+            if not data:
+                self.alive = False
+                break
+            chunks.append(data.decode("utf-8", errors="replace"))
+        if self.channel.closed or self.channel.exit_status_ready():
+            self.alive = False
+        if chunks:
+            text = "".join(chunks)
+            self.buffer += text
+            self.last_used_at = time.time()
+            return text
+        return ""
+
+    def read(self):
+        with self.lock:
+            self._pump()
+            text = self.buffer
+            self.buffer = ""
+            return text
+
+    def write(self, text):
+        with self.lock:
+            if not self.alive:
+                raise RuntimeError("La terminal remota ya no esta activa.")
+            self.channel.send(text)
+            self.last_used_at = time.time()
+            return self._pump()
+
+    def resize(self, cols, rows):
+        with self.lock:
+            if not self.alive:
+                return
+            self.channel.resize_pty(width=max(40, int(cols)), height=max(12, int(rows)))
+            self.last_used_at = time.time()
+
+    def close(self):
+        with self.lock:
+            if self.alive:
+                try:
+                    self.channel.close()
+                except Exception:
+                    pass
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
+            self.alive = False
+
+
+def get_terminal_session(create=False):
+    with terminal_sessions_lock:
+        session = terminal_sessions.get(REMOTE_HOST)
+        if session and not session.alive:
+            session.close()
+            terminal_sessions.pop(REMOTE_HOST, None)
+            session = None
+        if not session and create:
+            session = TerminalSession(REMOTE_HOST)
+            terminal_sessions[REMOTE_HOST] = session
+        return session
+
+
+def terminal_open(cols=120, rows=34):
+    session = get_terminal_session(create=True)
+    session.resize(cols, rows)
+    output = session.read()
+    return state_payload({"terminal": {"open": True, "output": output}})
+
+
+def terminal_read():
+    session = get_terminal_session(create=False)
+    if not session:
+        return state_payload({"terminal": {"open": False, "output": ""}})
+    return state_payload({"terminal": {"open": session.alive, "output": session.read()}})
+
+
+def terminal_write(text):
+    session = get_terminal_session(create=True)
+    output = session.write(text)
+    return state_payload({"terminal": {"open": session.alive, "output": output}})
+
+
+def terminal_resize(cols, rows):
+    session = get_terminal_session(create=False)
+    if session:
+        session.resize(cols, rows)
+    return state_payload({"terminal": {"open": bool(session and session.alive), "output": ""}})
+
+
+def terminal_close():
+    with terminal_sessions_lock:
+        session = terminal_sessions.pop(REMOTE_HOST, None)
+    if session:
+        session.close()
+    return state_payload({"terminal": {"open": False, "output": ""}, "result": {"reply": "Terminal remota cerrada."}})
 
 
 def firefox_open_command(url):
@@ -758,6 +881,16 @@ def send_keys(title, keys):
 
 def remote_action(action, body=None):
     body = body or {}
+    if action == "terminal-open":
+        return terminal_open(body.get("cols", 120), body.get("rows", 34))
+    if action == "terminal-read":
+        return terminal_read()
+    if action == "terminal-write":
+        return terminal_write(str(body.get("text", "")))
+    if action == "terminal-resize":
+        return terminal_resize(body.get("cols", 120), body.get("rows", 34))
+    if action == "terminal-close":
+        return terminal_close()
     if action == "screenshot":
         return screenshot()
     if action == "click":

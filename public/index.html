@@ -66,6 +66,32 @@
             </div>
           </article>
 
+          <article class="control-section full-span">
+            <div class="section-title">
+              <h2>Terminal remota</h2>
+              <div class="terminal-actions">
+                <button id="terminalOpenButton" type="button">Abrir terminal</button>
+                <button id="terminalClearButton" type="button">Limpiar</button>
+                <button id="terminalCloseButton" type="button">Cerrar</button>
+              </div>
+            </div>
+            <div class="terminal-shell">
+              <div id="terminalViewport" class="terminal-viewport" tabindex="0" aria-label="Terminal SSH remota"></div>
+              <div class="terminal-entry">
+                <span class="terminal-prompt">$</span>
+                <input id="terminalInput" autocomplete="off" spellcheck="false" placeholder="Escribe comandos y presiona Enter..." />
+                <button id="terminalSendButton" type="button">Enviar</button>
+              </div>
+              <div class="terminal-shortcuts">
+                <button data-terminal-seq="\u0003" type="button">Ctrl+C</button>
+                <button data-terminal-seq="\u000c" type="button">Ctrl+L</button>
+                <button data-terminal-seq="\t" type="button">Tab</button>
+                <button data-terminal-seq="\u001b[A" type="button">Arriba</button>
+                <button data-terminal-seq="\u001b[B" type="button">Abajo</button>
+              </div>
+            </div>
+          </article>
+
           <article class="control-section">
             <div class="section-title">
               <h2>Navegador</h2>
