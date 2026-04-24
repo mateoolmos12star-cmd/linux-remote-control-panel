@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Linux Remote Control</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="main-panel" aria-label="Panel de control Linux remoto">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Control remoto</p>
+            <h1>Linux remoto</h1>
+          </div>
+          <div class="status">
+            <span class="dot"></span>
+            <span id="remoteHost">remote-linux</span>
+          </div>
+        </header>
+
+        <section class="control-grid">
+          <article class="control-section full-span">
+            <div class="section-title">
+              <h2>Comando universal</h2>
+            </div>
+            <form id="commandForm" class="url-form command-form">
+              <input id="commandInput" autocomplete="off" placeholder="Ej: abre Firefox, youtube Eminem, captura, estado..." />
+              <button type="submit">Ejecutar</button>
+            </form>
+          </article>
+
+          <article class="control-section full-span">
+            <div class="section-title">
+              <h2>Pantalla remota</h2>
+              <button id="screenshotButton" type="button">Ver pantalla</button>
+            </div>
+            <div class="screen-tools">
+              <img id="remoteScreen" alt="Captura remota de Linux" />
+              <div class="keyboard-row">
+                <input id="remoteText" autocomplete="off" placeholder="Escribir en Linux remoto..." />
+                <button id="typeTextButton" type="button">Escribir</button>
+              </div>
+              <div class="button-grid shortcut-grid">
+                <button data-shortcut="ctrl-l">Ctrl+L</button>
+                <button data-shortcut="enter">Enter</button>
+                <button data-shortcut="esc">Esc</button>
+                <button data-shortcut="tab">Tab</button>
+                <button data-shortcut="alt-tab">Alt+Tab</button>
+                <button data-shortcut="ctrl-w">Ctrl+W</button>
+              </div>
+            </div>
+          </article>
+
+          <article class="control-section apps-section">
+            <div class="section-title">
+              <h2>Apps del sistema</h2>
+              <button id="refreshAppsButton" type="button">Cargar apps</button>
+            </div>
+            <div class="app-search">
+              <input id="appSearch" autocomplete="off" placeholder="Buscar app en Linux remoto..." />
+            </div>
+            <div id="appsList" class="apps-list">
+              <p class="empty">Carga la lista para abrir cualquier app instalada.</p>
+            </div>
+          </article>
+
+          <article class="control-section">
+            <div class="section-title">
+              <h2>Navegador</h2>
+            </div>
+            <div class="button-grid">
+              <button data-action="open-firefox">Abrir Firefox</button>
+              <button data-action="close-firefox">Cerrar Firefox</button>
+              <button data-action="open-youtube">Abrir YouTube</button>
+              <button data-action="open-eminem">Playlist Eminem</button>
+            </div>
+            <form id="urlForm" class="url-form">
+              <input id="urlInput" autocomplete="off" placeholder="Abrir URL en Linux remoto..." />
+              <button type="submit">Abrir</button>
+            </form>
+            <form id="youtubeSearchForm" class="url-form search-form">
+              <input id="youtubeSearchInput" autocomplete="off" placeholder="Buscar video en YouTube..." />
+              <button type="submit">Buscar</button>
+            </form>
+            <div id="youtubeResults" class="video-results">
+              <p class="empty">Busca un video para ver resultados y reproducirlo en Linux remoto.</p>
+            </div>
+          </article>
+
+          <article class="control-section">
+            <div class="section-title">
+              <h2>YouTube</h2>
+              <button id="mediaRefreshButton" type="button">Ver reproduccion</button>
+            </div>
+            <div class="media-card">
+              <div class="media-now">
+                <strong id="mediaTitle">Sin datos de reproduccion</strong>
+                <span id="mediaMeta">Presiona Ver reproduccion</span>
+              </div>
+              <div class="media-time">
+                <span id="mediaCurrent">0:00</span>
+                <input id="mediaSeek" type="range" min="0" max="0" value="0" step="1000000" disabled />
+                <span id="mediaDuration">0:00</span>
+              </div>
+            </div>
+            <div class="button-grid three">
+              <button data-action="media-prev">Anterior</button>
+              <button data-action="media-play-pause">Play/Pausa</button>
+              <button data-action="media-next">Siguiente</button>
+            </div>
+          </article>
+
+          <article class="control-section">
+            <div class="section-title">
+              <h2>Aplicaciones</h2>
+            </div>
+            <div class="button-grid">
+              <button data-action="open-obs">Abrir OBS</button>
+              <button data-action="close-obs">Cerrar OBS</button>
+              <button data-action="obs-status">Estado OBS</button>
+              <button data-action="obs-record">Grabar OBS</button>
+              <button data-action="obs-stream">Stream OBS</button>
+            </div>
+          </article>
+
+          <article class="control-section">
+            <div class="section-title">
+              <h2>Audio</h2>
+              <button data-action="audio-sinks" type="button">Salidas</button>
+            </div>
+            <div class="button-grid three">
+              <button data-action="volume-down">Vol -</button>
+              <button data-action="mute">Mute</button>
+              <button data-action="volume-up">Vol +</button>
+            </div>
+            <div id="audioSinks" class="compact-list"></div>
+          </article>
+
+          <article class="control-section">
+            <div class="section-title">
+              <h2>Ventanas</h2>
+              <button data-action="windows" type="button">Actualizar</button>
+            </div>
+            <div id="windowsList" class="compact-list"></div>
+          </article>
+
+          <article class="control-section">
+            <div class="section-title">
+              <h2>Archivos</h2>
+              <button id="refreshFilesButton" type="button">Abrir ruta</button>
+            </div>
+            <form id="filesForm" class="url-form">
+              <input id="filesPath" autocomplete="off" value="~" />
+              <button type="submit">Ver</button>
+            </form>
+            <div id="filesList" class="compact-list"></div>
+            <div class="transfer-box">
+              <input id="copySource" autocomplete="off" placeholder="Origen local o remoto..." />
+              <input id="copyDestination" autocomplete="off" placeholder="Destino remoto o local..." />
+              <button id="copyToRemoteButton" type="button">Enviar</button>
+              <button id="copyFromRemoteButton" type="button">Traer</button>
+            </div>
+          </article>
+
+          <article class="control-section full-span">
+            <div class="section-title">
+              <h2>Sistema</h2>
+              <button data-action="system" type="button">Actualizar</button>
+            </div>
+            <div id="systemInfo" class="system-info"></div>
+          </article>
+        </section>
+
+        <section class="log-panel">
+          <div class="section-title">
+            <h2>Registro</h2>
+            <button id="statusButton" type="button">Actualizar estado</button>
+          </div>
+          <div id="messages" class="messages" aria-live="polite"></div>
+        </section>
+      </section>
+
+      <aside class="side-panel">
+        <section class="mini-section">
+          <div class="section-title">
+            <h2>Tareas</h2>
+            <span id="taskCount">0</span>
+          </div>
+          <div id="tasks" class="tasks"></div>
+        </section>
+      </aside>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
