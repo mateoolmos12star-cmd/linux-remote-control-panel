@@ -17,6 +17,7 @@ import paramiko
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC = ROOT / "public"
+CONNECTIONS_FILE = ROOT / "connections.json"
 PORT = int(os.environ.get("REMOTE_PANEL_PORT") or os.environ.get("ENDEAVOUR_PANEL_PORT") or "8787")
 REMOTE_HOST = os.environ.get("REMOTE_SSH_HOST") or os.environ.get("ENDEAVOUR_SSH_HOST") or "endeavour"
 REMOTE_DISPLAY = os.environ.get("REMOTE_DISPLAY", ":0")
@@ -40,6 +41,9 @@ def hidden_startupinfo():
 
 
 def ssh_config_for(host):
+    host = (host or "").strip()
+    if not host:
+        return {}
     config_path = Path.home() / ".ssh" / "config"
     if not config_path.exists():
         return {"hostname": host, "user": os.environ.get("USERNAME")}
@@ -51,23 +55,131 @@ def ssh_config_for(host):
     return data
 
 
-def paramiko_client():
+def default_connection():
     data = ssh_config_for(REMOTE_HOST)
-    hostname = data.get("hostname", REMOTE_HOST)
-    user = data.get("user") or os.environ.get("USERNAME")
-    port = int(data.get("port", 22))
     identity_files = data.get("identityfile") or []
-    key_filename = [str(Path(os.path.expanduser(item))) for item in identity_files]
+    key_path = str(Path(os.path.expanduser(identity_files[0]))) if identity_files else ""
+    return {
+        "host": REMOTE_HOST,
+        "username": data.get("user") or "",
+        "port": int(data.get("port", 22) or 22),
+        "authMethod": "key" if key_path else "password",
+        "keyPath": key_path,
+        "remember": True,
+        "connected": False,
+        "password": "",
+    }
+
+
+def sanitize_connection(connection):
+    connection = connection or {}
+    return {
+        "host": str(connection.get("host", "")).strip(),
+        "username": str(connection.get("username", "")).strip(),
+        "port": int(connection.get("port", 22) or 22),
+        "authMethod": str(connection.get("authMethod", "password")),
+        "keyPath": str(connection.get("keyPath", "")).strip(),
+        "remember": bool(connection.get("remember", True)),
+        "connected": bool(connection.get("connected", False)),
+    }
+
+
+def load_recent_connections():
+    if not CONNECTIONS_FILE.exists():
+        return []
+    try:
+        data = json.loads(CONNECTIONS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    recent = []
+    for item in data[:8]:
+        if not isinstance(item, dict):
+            continue
+        safe = sanitize_connection(item)
+        safe["connected"] = False
+        recent.append(safe)
+    return recent
+
+
+def save_recent_connections():
+    payload = []
+    for item in recent_connections[:8]:
+        safe = sanitize_connection(item)
+        safe["connected"] = False
+        payload.append(safe)
+    CONNECTIONS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def remember_connection(connection):
+    safe = sanitize_connection(connection)
+    safe["connected"] = False
+    recent_connections[:] = [
+        item
+        for item in recent_connections
+        if not (
+            item.get("host", "").lower() == safe["host"].lower()
+            and item.get("username", "").lower() == safe["username"].lower()
+            and int(item.get("port", 22)) == safe["port"]
+        )
+    ]
+    recent_connections.insert(0, safe)
+    del recent_connections[8:]
+    save_recent_connections()
+
+
+def resolve_connection(connection):
+    safe = sanitize_connection(connection)
+    if not safe["host"]:
+        raise RuntimeError("Debes escribir una IP o hostname.")
+    if not safe["username"]:
+        raise RuntimeError("Debes escribir el usuario SSH.")
+    data = ssh_config_for(safe["host"])
+    hostname = data.get("hostname", safe["host"])
+    port = safe["port"] or int(data.get("port", 22) or 22)
+    key_path = safe["keyPath"]
+    if not key_path:
+        identity_files = data.get("identityfile") or []
+        if identity_files:
+            key_path = str(Path(os.path.expanduser(identity_files[0])))
+    password = str(connection.get("password", "") or "")
+    return {
+        "host": safe["host"],
+        "hostname": hostname,
+        "username": safe["username"],
+        "port": int(port),
+        "authMethod": safe["authMethod"],
+        "keyPath": key_path,
+        "remember": safe["remember"],
+        "connected": safe["connected"],
+        "password": password,
+    }
+
+
+def connection_key(connection=None):
+    safe = sanitize_connection(connection or current_connection)
+    return f"{safe['username']}@{safe['host']}:{safe['port']}"
+
+
+def paramiko_client(connection=None):
+    resolved = resolve_connection(connection or current_connection)
+    key_filename = [resolved["keyPath"]] if resolved["keyPath"] else None
+    use_key = resolved["authMethod"] == "key"
+    password = resolved["password"] if resolved["authMethod"] == "password" else None
+    if resolved["authMethod"] == "password" and not password:
+        raise RuntimeError("Debes escribir la contrasena SSH.")
     client = paramiko.SSHClient()
     client.load_system_host_keys()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(
-        hostname=hostname,
-        port=port,
-        username=user,
+        hostname=resolved["hostname"],
+        port=resolved["port"],
+        username=resolved["username"],
+        password=password or None,
         key_filename=key_filename or None,
-        look_for_keys=True,
-        allow_agent=True,
+        look_for_keys=use_key,
+        allow_agent=use_key,
         timeout=8,
         banner_timeout=8,
         auth_timeout=8,
@@ -84,6 +196,8 @@ messages = [
 tasks = []
 terminal_sessions = {}
 terminal_sessions_lock = threading.Lock()
+current_connection = default_connection()
+recent_connections = load_recent_connections()
 
 
 def now():
@@ -123,17 +237,23 @@ def state_payload(extra=None):
     payload = {
         "messages": messages,
         "tasks": tasks,
-        "remoteHost": REMOTE_HOST,
+        "remoteHost": current_connection.get("host", "") or "sin conexion",
         "terminalOpen": False,
+        "connected": bool(current_connection.get("connected", False)),
+        "connectionInfo": sanitize_connection(current_connection),
+        "recentConnections": recent_connections,
     }
     with terminal_sessions_lock:
-        payload["terminalOpen"] = REMOTE_HOST in terminal_sessions and terminal_sessions[REMOTE_HOST].alive
+        key = connection_key()
+        payload["terminalOpen"] = payload["connected"] and key in terminal_sessions and terminal_sessions[key].alive
     if extra:
         payload.update(extra)
     return payload
 
 
 def ssh_raw(command, input_text=None, timeout=15, batch=True):
+    if not current_connection.get("connected"):
+        return subprocess.CompletedProcess(command, 255, "", "No hay conexion SSH activa.")
     try:
         with paramiko_client() as client:
             stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
@@ -217,9 +337,90 @@ $shortcut.Save()
     return state_payload({"result": {"reply": f"Acceso directo creado en {shortcut}"}})
 
 
+def close_terminal_sessions():
+    with terminal_sessions_lock:
+        sessions = list(terminal_sessions.values())
+        terminal_sessions.clear()
+    for session in sessions:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def connect_payload(body):
+    body = body or {}
+    connection = {
+        "host": str(body.get("host", "")).strip(),
+        "username": str(body.get("username", "")).strip(),
+        "port": int(str(body.get("port", "22") or "22")),
+        "authMethod": str(body.get("authMethod", "password")).strip().lower(),
+        "keyPath": str(body.get("keyPath", "")).strip(),
+        "remember": bool(body.get("remember", True)),
+        "password": str(body.get("password", "")),
+        "connected": False,
+    }
+    if connection["authMethod"] not in {"password", "key"}:
+        raise RuntimeError("Metodo de acceso no soportado.")
+    return connection
+
+
+def test_connection(connection):
+    resolved = resolve_connection(connection)
+    with paramiko_client(resolved) as client:
+        stdin, stdout, stderr = client.exec_command("hostname", timeout=8)
+        hostname = stdout.read().decode("utf-8", errors="replace").strip() or resolved["hostname"]
+        error_text = stderr.read().decode("utf-8", errors="replace").strip()
+        if error_text and not hostname:
+            raise RuntimeError(error_text)
+    return hostname
+
+
+def connection_test(body):
+    connection = connect_payload(body)
+    hostname = test_connection(connection)
+    return state_payload(
+        {
+            "result": {
+                "reply": f"Conexion correcta con {hostname}.",
+                "connectionHost": hostname,
+            }
+        }
+    )
+
+
+def connection_connect(body):
+    global current_connection
+    connection = connect_payload(body)
+    hostname = test_connection(connection)
+    close_terminal_sessions()
+    connection["connected"] = True
+    current_connection = connection
+    if connection.get("remember"):
+        remember_connection(connection)
+    messages.append(
+        {
+            "role": "assistant",
+            "content": f"Conexion SSH activa con {connection['host']} ({hostname}).",
+        }
+    )
+    return state_payload({"result": {"reply": f"Conectado a {connection['host']}."}})
+
+
+def connection_disconnect():
+    global current_connection
+    close_terminal_sessions()
+    remembered = sanitize_connection(current_connection)
+    remembered["connected"] = False
+    remembered["password"] = ""
+    current_connection = remembered
+    messages.append({"role": "assistant", "content": "Conexion SSH cerrada."})
+    return state_payload({"terminal": {"open": False, "output": ""}, "result": {"reply": "Conexion cerrada."}})
+
+
 class TerminalSession:
-    def __init__(self, host):
-        self.host = host
+    def __init__(self, connection):
+        self.connection = sanitize_connection(connection)
         self.client = paramiko_client()
         self.channel = self.client.invoke_shell(term="xterm-256color", width=120, height=34)
         self.channel.settimeout(0.0)
@@ -286,20 +487,25 @@ class TerminalSession:
 
 
 def get_terminal_session(create=False):
+    if not current_connection.get("connected"):
+        return None
+    key = connection_key()
     with terminal_sessions_lock:
-        session = terminal_sessions.get(REMOTE_HOST)
+        session = terminal_sessions.get(key)
         if session and not session.alive:
             session.close()
-            terminal_sessions.pop(REMOTE_HOST, None)
+            terminal_sessions.pop(key, None)
             session = None
         if not session and create:
-            session = TerminalSession(REMOTE_HOST)
-            terminal_sessions[REMOTE_HOST] = session
+            session = TerminalSession(current_connection)
+            terminal_sessions[key] = session
         return session
 
 
 def terminal_open(cols=120, rows=34):
     session = get_terminal_session(create=True)
+    if not session:
+        raise RuntimeError("No hay conexion SSH activa.")
     session.resize(cols, rows)
     output = session.read()
     return state_payload({"terminal": {"open": True, "output": output}})
@@ -314,6 +520,8 @@ def terminal_read():
 
 def terminal_write(text):
     session = get_terminal_session(create=True)
+    if not session:
+        raise RuntimeError("No hay conexion SSH activa.")
     output = session.write(text)
     return state_payload({"terminal": {"open": session.alive, "output": output}})
 
@@ -922,6 +1130,12 @@ def send_keys(title, keys):
 
 def remote_action(action, body=None):
     body = body or {}
+    if action == "connection-test":
+        return connection_test(body)
+    if action == "connection-connect":
+        return connection_connect(body)
+    if action == "connection-disconnect":
+        return connection_disconnect()
     if action == "desktop-shortcut":
         return desktop_shortcut()
     if action == "terminal-open":

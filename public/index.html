@@ -7,6 +7,76 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <section id="connectionGate" class="connection-gate" aria-label="Conexion SSH">
+      <div class="connection-card">
+        <div class="connection-copy">
+          <p class="eyebrow">Conexion SSH</p>
+          <h1>Conecta cualquier Linux</h1>
+          <p class="connection-text">Antes de abrir el panel, conecta el equipo remoto por SSH.</p>
+        </div>
+
+        <form id="connectionForm" class="connection-form">
+          <div class="field-grid">
+            <label>
+              <span>IP o hostname</span>
+              <input id="connectionHost" autocomplete="off" placeholder="192.168.1.26 o mi-servidor" />
+            </label>
+            <label>
+              <span>Usuario SSH</span>
+              <input id="connectionUser" autocomplete="off" placeholder="npc" />
+            </label>
+            <label>
+              <span>Puerto</span>
+              <input id="connectionPort" type="number" min="1" max="65535" value="22" />
+            </label>
+            <label>
+              <span>Metodo</span>
+              <select id="authMethod">
+                <option value="password">Contrasena</option>
+                <option value="key">Llave SSH</option>
+              </select>
+            </label>
+          </div>
+
+          <label id="passwordField">
+            <span>Contrasena</span>
+            <div class="password-row">
+              <input id="connectionPassword" type="password" autocomplete="current-password" placeholder="Contrasena SSH" />
+              <button id="togglePasswordButton" type="button">Mostrar</button>
+            </div>
+          </label>
+
+          <label id="keyPathField" class="hidden">
+            <span>Ruta de llave SSH</span>
+            <input id="connectionKeyPath" autocomplete="off" placeholder="C:\Users\tu_usuario\.ssh\id_ed25519" />
+          </label>
+
+          <div class="connection-options">
+            <label class="checkbox-row">
+              <input id="rememberConnection" type="checkbox" checked />
+              <span>Recordar este equipo</span>
+            </label>
+          </div>
+
+          <div class="connection-actions">
+            <button id="connectionTestButton" type="button">Probar conexion</button>
+            <button id="connectionConnectButton" type="submit">Conectar</button>
+          </div>
+
+          <p id="connectionFeedback" class="connection-feedback"></p>
+        </form>
+
+        <section class="recent-box">
+          <div class="section-title compact">
+            <h2>Equipos recientes</h2>
+          </div>
+          <div id="recentConnections" class="recent-list">
+            <p class="empty">Todavia no hay equipos guardados.</p>
+          </div>
+        </section>
+      </div>
+    </section>
+
     <main class="shell">
       <section class="main-panel" aria-label="Panel de control Linux remoto">
         <header class="topbar">
@@ -17,6 +87,9 @@
           <div class="status">
             <span class="dot"></span>
             <span id="remoteHost">remote-linux</span>
+          </div>
+          <div class="topbar-actions">
+            <button id="disconnectButton" type="button">Cambiar equipo</button>
           </div>
         </header>
 

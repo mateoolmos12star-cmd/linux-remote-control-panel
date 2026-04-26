@@ -2,7 +2,24 @@ const messagesEl = document.querySelector("#messages");
 const tasksEl = document.querySelector("#tasks");
 const taskCountEl = document.querySelector("#taskCount");
 const remoteHostEl = document.querySelector("#remoteHost");
+const disconnectButton = document.querySelector("#disconnectButton");
 const statusButton = document.querySelector("#statusButton");
+const connectionGate = document.querySelector("#connectionGate");
+const connectionForm = document.querySelector("#connectionForm");
+const connectionHost = document.querySelector("#connectionHost");
+const connectionUser = document.querySelector("#connectionUser");
+const connectionPort = document.querySelector("#connectionPort");
+const authMethod = document.querySelector("#authMethod");
+const passwordField = document.querySelector("#passwordField");
+const keyPathField = document.querySelector("#keyPathField");
+const connectionPassword = document.querySelector("#connectionPassword");
+const connectionKeyPath = document.querySelector("#connectionKeyPath");
+const rememberConnection = document.querySelector("#rememberConnection");
+const togglePasswordButton = document.querySelector("#togglePasswordButton");
+const connectionTestButton = document.querySelector("#connectionTestButton");
+const connectionConnectButton = document.querySelector("#connectionConnectButton");
+const connectionFeedback = document.querySelector("#connectionFeedback");
+const recentConnections = document.querySelector("#recentConnections");
 const urlForm = document.querySelector("#urlForm");
 const urlInput = document.querySelector("#urlInput");
 const youtubeSearchForm = document.querySelector("#youtubeSearchForm");
@@ -41,7 +58,18 @@ const terminalClearButton = document.querySelector("#terminalClearButton");
 const terminalCloseButton = document.querySelector("#terminalCloseButton");
 const terminalSendButton = document.querySelector("#terminalSendButton");
 
-let state = { messages: [], tasks: [], remoteHost: "remote-linux", apps: [], youtubeResults: [], media: null, terminalOpen: false };
+let state = {
+  messages: [],
+  tasks: [],
+  remoteHost: "remote-linux",
+  apps: [],
+  youtubeResults: [],
+  media: null,
+  terminalOpen: false,
+  connected: false,
+  connectionInfo: { host: "", username: "", port: 22, authMethod: "password", keyPath: "", remember: true },
+  recentConnections: [],
+};
 let apps = [];
 let videoResults = [];
 let mediaPoll = null;
@@ -81,7 +109,7 @@ function renderTasks() {
 }
 
 function render() {
-  remoteHostEl.textContent = state.remoteHost || "remote-linux";
+  remoteHostEl.textContent = state.connected ? (state.remoteHost || "linux remoto") : "sin conexion";
   renderMessages();
   renderTasks();
   if (state.apps) {
@@ -99,17 +127,96 @@ function render() {
   if (state.system) renderSystem();
   if (state.audioSinks) renderAudioSinks();
   renderTerminalState();
+  renderConnectionGate();
+  renderRecentConnections();
 }
 
 async function loadState() {
   const response = await fetch("/api/state");
   state = await response.json();
+  syncConnectionForm(true);
+  setConnectionFeedback("");
   render();
 }
 
 function appendLocalMessage(content) {
   state.messages.push({ role: "assistant", content });
   renderMessages();
+}
+
+function connectionPayload() {
+  return {
+    host: connectionHost.value.trim(),
+    username: connectionUser.value.trim(),
+    port: Number(connectionPort.value || 22),
+    authMethod: authMethod.value,
+    password: connectionPassword.value,
+    keyPath: connectionKeyPath.value.trim(),
+    remember: rememberConnection.checked,
+  };
+}
+
+function setConnectionFeedback(text, isError = false) {
+  connectionFeedback.textContent = text || "";
+  connectionFeedback.dataset.error = isError ? "1" : "0";
+}
+
+function syncConnectionForm(force = false) {
+  const info = state.connectionInfo || {};
+  if (force || !connectionHost.value.trim()) connectionHost.value = info.host || "";
+  if (force || !connectionUser.value.trim()) connectionUser.value = info.username || "";
+  if (force || !connectionPort.value) connectionPort.value = String(info.port || 22);
+  authMethod.value = info.authMethod || "password";
+  if (force || !connectionKeyPath.value.trim()) connectionKeyPath.value = info.keyPath || "";
+  rememberConnection.checked = info.remember !== false;
+  toggleAuthFields();
+}
+
+function renderConnectionGate() {
+  connectionGate.dataset.connected = state.connected ? "1" : "0";
+  disconnectButton.hidden = !state.connected;
+  if (!state.connected) {
+    syncConnectionForm();
+  }
+}
+
+function renderRecentConnections() {
+  const items = state.recentConnections || [];
+  if (!items.length) {
+    recentConnections.innerHTML = `<p class="empty">Todavia no hay equipos guardados.</p>`;
+    return;
+  }
+  recentConnections.innerHTML = items
+    .map(
+      (item, index) => `
+        <button class="recent-item" type="button" data-recent-index="${index}">
+          <strong>${escapeHtml(item.username)}@${escapeHtml(item.host)}</strong>
+          <small>Puerto ${escapeHtml(String(item.port || 22))} - ${escapeHtml(item.authMethod === "key" ? "Llave SSH" : "Contrasena")}</small>
+        </button>
+      `
+    )
+    .join("");
+  recentConnections.querySelectorAll("[data-recent-index]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const item = state.recentConnections[Number(button.dataset.recentIndex)];
+      if (!item) return;
+      connectionHost.value = item.host || "";
+      connectionUser.value = item.username || "";
+      connectionPort.value = String(item.port || 22);
+      authMethod.value = item.authMethod || "password";
+      connectionKeyPath.value = item.keyPath || "";
+      rememberConnection.checked = item.remember !== false;
+      connectionPassword.value = "";
+      setConnectionFeedback("");
+      toggleAuthFields();
+    });
+  });
+}
+
+function toggleAuthFields() {
+  const isPassword = authMethod.value === "password";
+  passwordField.classList.toggle("hidden", !isPassword);
+  keyPathField.classList.toggle("hidden", isPassword);
 }
 
 function normalizeTerminal(text) {
@@ -175,6 +282,34 @@ async function terminalAction(action, payload = {}, button = null) {
     render();
   } catch (error) {
     appendLocalMessage(`No pude usar la terminal remota: ${error.message}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function connectionAction(action, payload = {}, button = null) {
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`/api/remote/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Error desconocido");
+    state = { ...state, ...data };
+    setConnectionFeedback(data.result?.reply || "");
+    if (action === "connection-connect") {
+      connectionPassword.value = "";
+    }
+    if (action === "connection-disconnect") {
+      terminalBuffer = "";
+      terminalViewport.textContent = "";
+      connectionPassword.value = "";
+    }
+    render();
+  } catch (error) {
+    setConnectionFeedback(error.message, true);
   } finally {
     if (button) button.disabled = false;
   }
@@ -323,6 +458,29 @@ document.querySelectorAll("[data-action]").forEach((button) => {
   button.addEventListener("click", () => runAction(button.dataset.action, {}, button));
 });
 
+authMethod.addEventListener("change", toggleAuthFields);
+
+togglePasswordButton.addEventListener("click", () => {
+  const visible = connectionPassword.type === "text";
+  connectionPassword.type = visible ? "password" : "text";
+  togglePasswordButton.textContent = visible ? "Mostrar" : "Ocultar";
+});
+
+connectionTestButton.addEventListener("click", () => {
+  setConnectionFeedback("");
+  connectionAction("connection-test", connectionPayload(), connectionTestButton);
+});
+
+connectionForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  setConnectionFeedback("");
+  connectionAction("connection-connect", connectionPayload(), connectionConnectButton);
+});
+
+disconnectButton.addEventListener("click", () => {
+  connectionAction("connection-disconnect", {}, disconnectButton);
+});
+
 statusButton.addEventListener("click", () => runAction("status", {}, statusButton));
 refreshAppsButton.addEventListener("click", () => runAction("apps", {}, refreshAppsButton));
 appSearch.addEventListener("input", renderApps);
@@ -401,7 +559,7 @@ function terminalCols() {
 }
 
 async function pollTerminal() {
-  if (!state.terminalOpen) return;
+  if (!state.connected || !state.terminalOpen) return;
   await terminalAction("terminal-read");
 }
 
@@ -530,5 +688,8 @@ window.addEventListener("resize", () => {
 });
 
 loadState();
-mediaPoll = setInterval(() => runAction("media-status"), 12000);
+mediaPoll = setInterval(() => {
+  if (!state.connected) return;
+  runAction("media-status");
+}, 12000);
 terminalPoll = setInterval(pollTerminal, 900);
