@@ -196,6 +196,7 @@ messages = [
 tasks = []
 terminal_sessions = {}
 terminal_sessions_lock = threading.Lock()
+gui_env_cache = {}
 current_connection = default_connection()
 recent_connections = load_recent_connections()
 
@@ -279,21 +280,126 @@ def shell_export(name, value):
     return f"export {name}={shlex.quote(str(value))}; "
 
 
-def gui_prefix(command):
-    return (
-        shell_export("DISPLAY", REMOTE_DISPLAY)
-        + shell_export("XAUTHORITY", REMOTE_XAUTHORITY)
-        + shell_export("XDG_RUNTIME_DIR", REMOTE_XDG_RUNTIME_DIR)
-        + shell_export("DBUS_SESSION_BUS_ADDRESS", REMOTE_DBUS_SESSION_BUS_ADDRESS)
-        + f"{command}"
-    )
-
-
 def remote_session_env():
     return {
         "XDG_RUNTIME_DIR": REMOTE_XDG_RUNTIME_DIR,
         "DBUS_SESSION_BUS_ADDRESS": REMOTE_DBUS_SESSION_BUS_ADDRESS,
     }
+
+
+def clear_remote_runtime_cache():
+    gui_env_cache.clear()
+
+
+def discover_remote_gui_env():
+    script = r"""
+import json
+import os
+import pwd
+import subprocess
+from pathlib import Path
+
+uid = os.getuid()
+user = pwd.getpwuid(uid).pw_name
+runtime_dir = f"/run/user/{uid}"
+env = {
+    "XDG_RUNTIME_DIR": runtime_dir,
+    "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime_dir}/bus",
+}
+
+patterns = [
+    "xfce4-session",
+    "gnome-shell",
+    "plasmashell",
+    "Xorg",
+    "Xwayland",
+    "firefox",
+    "obs",
+    "dbus-broker",
+    "dbus-daemon",
+    "pipewire",
+    "wireplumber",
+]
+
+pids = []
+for pattern in patterns:
+    try:
+        output = subprocess.check_output(
+            ["pgrep", "-u", user, "-f", pattern],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        for item in output.split():
+            if item not in pids:
+                pids.append(item)
+    except Exception:
+        continue
+
+for pid in pids:
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    except Exception:
+        continue
+    for row in raw:
+        if b"=" not in row:
+            continue
+        key, value = row.split(b"=", 1)
+        key = key.decode("utf-8", errors="ignore")
+        value = value.decode("utf-8", errors="ignore")
+        if key in {"DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY"} and value:
+            env[key] = value
+
+if not env.get("DISPLAY"):
+    for guess in (":0", ":1"):
+        if Path(f"/tmp/.X11-unix/X{guess.lstrip(':')}").exists():
+            env["DISPLAY"] = guess
+            break
+
+if not env.get("XAUTHORITY"):
+    home = str(Path.home())
+    for candidate in (
+        os.environ.get("XAUTHORITY", ""),
+        f"{home}/.Xauthority",
+        f"{runtime_dir}/gdm/Xauthority",
+        f"{runtime_dir}/Xauthority",
+    ):
+        if candidate and Path(candidate).exists():
+            env["XAUTHORITY"] = candidate
+            break
+
+print(json.dumps(env))
+"""
+    output = ssh("cat > /tmp/codex_gui_env.py && python /tmp/codex_gui_env.py", input_text=script, timeout=12)
+    try:
+        return json.loads(output or "{}")
+    except Exception as exc:
+        raise RuntimeError(f"No pude detectar la sesion grafica remota: {exc}") from exc
+
+
+def current_gui_env():
+    key = connection_key()
+    if key in gui_env_cache:
+        return gui_env_cache[key]
+    env = discover_remote_gui_env()
+    gui_env_cache[key] = env
+    return env
+
+
+def gui_prefix(command):
+    env = current_gui_env()
+    display = env.get("DISPLAY") or REMOTE_DISPLAY
+    if not display:
+        raise RuntimeError("No encontre una sesion grafica activa en el equipo remoto.")
+    prefix = shell_export("DISPLAY", display)
+    if env.get("XAUTHORITY"):
+        prefix += shell_export("XAUTHORITY", env["XAUTHORITY"])
+    if env.get("XDG_RUNTIME_DIR"):
+        prefix += shell_export("XDG_RUNTIME_DIR", env["XDG_RUNTIME_DIR"])
+    if env.get("DBUS_SESSION_BUS_ADDRESS"):
+        prefix += shell_export("DBUS_SESSION_BUS_ADDRESS", env["DBUS_SESSION_BUS_ADDRESS"])
+    if env.get("WAYLAND_DISPLAY"):
+        prefix += shell_export("WAYLAND_DISPLAY", env["WAYLAND_DISPLAY"])
+    return prefix + command
 
 
 def desktop_shortcut():
@@ -341,6 +447,7 @@ def close_terminal_sessions():
     with terminal_sessions_lock:
         sessions = list(terminal_sessions.values())
         terminal_sessions.clear()
+    clear_remote_runtime_cache()
     for session in sessions:
         try:
             session.close()
@@ -394,6 +501,7 @@ def connection_connect(body):
     connection = connect_payload(body)
     hostname = test_connection(connection)
     close_terminal_sessions()
+    clear_remote_runtime_cache()
     connection["connected"] = True
     current_connection = connection
     if connection.get("remember"):
@@ -410,6 +518,7 @@ def connection_connect(body):
 def connection_disconnect():
     global current_connection
     close_terminal_sessions()
+    clear_remote_runtime_cache()
     remembered = sanitize_connection(current_connection)
     remembered["connected"] = False
     remembered["password"] = ""
@@ -544,15 +653,32 @@ def terminal_close():
 def firefox_open_command(url):
     quoted_url = shlex.quote(url)
     return gui_prefix(
-        "pkill -x firefox || true; "
+        "if command -v firefox >/dev/null 2>&1; then "
+        "  launcher='firefox'; "
+        "elif command -v flatpak >/dev/null 2>&1 && flatpak info org.mozilla.firefox >/dev/null 2>&1; then "
+        "  launcher='flatpak run org.mozilla.firefox'; "
+        "else "
+        "  echo 'Firefox no esta instalado en el equipo remoto.' >&2; exit 11; "
+        "fi; "
+        "pkill -x firefox >/dev/null 2>&1 || true; "
         "sleep 1; "
-        f"nohup firefox {quoted_url} >/tmp/codex-firefox-url.log 2>&1 &"
+        f"nohup sh -lc \"$launcher {quoted_url}\" >/tmp/codex-firefox-url.log 2>&1 & "
+        "sleep 2; "
+        "pgrep -af 'firefox|org.mozilla.firefox' >/dev/null"
     )
 
 
 def screenshot():
     command = gui_prefix(
-        "xfce4-screenshooter -f -s /tmp/codex-screen.jpg >/tmp/codex-shot.log 2>&1 && "
+        "if command -v xfce4-screenshooter >/dev/null 2>&1; then "
+        "  xfce4-screenshooter -f -s /tmp/codex-screen.jpg >/tmp/codex-shot.log 2>&1; "
+        "elif command -v gnome-screenshot >/dev/null 2>&1; then "
+        "  gnome-screenshot -f /tmp/codex-screen.jpg >/tmp/codex-shot.log 2>&1; "
+        "elif command -v scrot >/dev/null 2>&1; then "
+        "  scrot /tmp/codex-screen.jpg >/tmp/codex-shot.log 2>&1; "
+        "else "
+        "  echo 'No encontre herramienta de captura (xfce4-screenshooter, gnome-screenshot o scrot).' >&2; exit 12; "
+        "fi && "
         "base64 -w 0 /tmp/codex-screen.jpg"
     )
     image = ssh(command, timeout=20)
@@ -727,7 +853,11 @@ def open_file(remote_path):
     if not remote_path.strip():
         raise RuntimeError("Ruta vacia")
     quoted = shlex.quote(remote_path)
-    return state_payload({"result": run_task(f"Abrir archivo {remote_path}", "remote_file", gui_prefix(f"nohup xdg-open {quoted} >/tmp/codex-open-file.log 2>&1 &"), timeout=10)})
+    command = gui_prefix(
+        f"command -v xdg-open >/dev/null 2>&1 || {{ echo 'xdg-open no esta disponible.' >&2; exit 13; }}; "
+        f"nohup xdg-open {quoted} >/tmp/codex-open-file.log 2>&1 & sleep 1"
+    )
+    return state_payload({"result": run_task(f"Abrir archivo {remote_path}", "remote_file", command, timeout=10)})
 
 
 def copy_file(direction, source, destination):
@@ -833,10 +963,26 @@ def obs_action(action):
         output = ssh("if pgrep -x obs >/dev/null; then echo running; else echo stopped; fi", timeout=8)
         return state_payload({"obs": {"status": output}, "result": {"reply": f"OBS: {output}"}})
     if action == "record":
-        command = gui_prefix("nohup flatpak run com.obsproject.Studio --startrecording >/tmp/codex-obs-record.log 2>&1 &")
+        command = gui_prefix(
+            "if command -v obs >/dev/null 2>&1; then "
+            "  launcher='obs --startrecording'; "
+            "elif command -v flatpak >/dev/null 2>&1 && flatpak info com.obsproject.Studio >/dev/null 2>&1; then "
+            "  launcher='flatpak run com.obsproject.Studio --startrecording'; "
+            "else "
+            "  echo 'OBS no esta instalado en el equipo remoto.' >&2; exit 14; "
+            "fi; nohup sh -lc \"$launcher\" >/tmp/codex-obs-record.log 2>&1 & sleep 2; pgrep -af 'obs|com.obsproject.Studio' >/dev/null"
+        )
         return state_payload({"result": run_task("Abrir OBS grabando", "remote_obs", command, timeout=12)})
     if action == "stream":
-        command = gui_prefix("nohup flatpak run com.obsproject.Studio --startstreaming >/tmp/codex-obs-stream.log 2>&1 &")
+        command = gui_prefix(
+            "if command -v obs >/dev/null 2>&1; then "
+            "  launcher='obs --startstreaming'; "
+            "elif command -v flatpak >/dev/null 2>&1 && flatpak info com.obsproject.Studio >/dev/null 2>&1; then "
+            "  launcher='flatpak run com.obsproject.Studio --startstreaming'; "
+            "else "
+            "  echo 'OBS no esta instalado en el equipo remoto.' >&2; exit 14; "
+            "fi; nohup sh -lc \"$launcher\" >/tmp/codex-obs-stream.log 2>&1 & sleep 2; pgrep -af 'obs|com.obsproject.Studio' >/dev/null"
+        )
         return state_payload({"result": run_task("Abrir OBS transmitiendo", "remote_obs", command, timeout=12)})
     raise RuntimeError("Accion OBS no soportada")
 
@@ -950,12 +1096,16 @@ def open_remote_app(app_id):
     if not re.match(r"^[A-Za-z0-9_.@+-]+\.desktop$", app_id):
         raise RuntimeError("Identificador de app no valido")
     quoted_id = shlex.quote(app_id)
+    command = gui_prefix(
+        f"(gtk-launch {quoted_id} >/tmp/codex-open-app.log 2>&1 || "
+        f"gio launch /usr/share/applications/{quoted_id} >/tmp/codex-open-app.log 2>&1) && sleep 1"
+    )
     return state_payload(
         {
             "result": run_task(
                 f"Abrir {app_id}",
                 "remote_app",
-                gui_prefix(f"gtk-launch {quoted_id} >/tmp/codex-open-app.log 2>&1 || gio launch /usr/share/applications/{quoted_id} >/tmp/codex-open-app.log 2>&1"),
+                command,
                 timeout=12,
             )
         }
@@ -1201,7 +1351,16 @@ def remote_action(action, body=None):
     if action == "open-app":
         return open_remote_app(str(body.get("appId", "")).strip())
     if action == "open-firefox":
-        return state_payload({"result": run_task("Abrir Firefox", "remote_app", gui_prefix("nohup firefox >/tmp/codex-firefox.log 2>&1 &"), timeout=10)})
+        command = gui_prefix(
+            "if command -v firefox >/dev/null 2>&1; then "
+            "  launcher='firefox'; "
+            "elif command -v flatpak >/dev/null 2>&1 && flatpak info org.mozilla.firefox >/dev/null 2>&1; then "
+            "  launcher='flatpak run org.mozilla.firefox'; "
+            "else "
+            "  echo 'Firefox no esta instalado en el equipo remoto.' >&2; exit 11; "
+            "fi; nohup sh -lc \"$launcher\" >/tmp/codex-firefox.log 2>&1 & sleep 2; pgrep -af 'firefox|org.mozilla.firefox' >/dev/null"
+        )
+        return state_payload({"result": run_task("Abrir Firefox", "remote_app", command, timeout=12)})
     if action == "close-firefox":
         return state_payload({"result": run_task("Cerrar Firefox", "remote_app", "pkill -x firefox || true", timeout=10)})
     if action == "open-youtube":
@@ -1245,7 +1404,16 @@ def remote_action(action, body=None):
             url = "https://" + url
         return state_payload({"result": run_task(f"Abrir {url}", "remote_browser", firefox_open_command(url), timeout=12)})
     if action == "open-obs":
-        return state_payload({"result": run_task("Abrir OBS", "remote_app", gui_prefix("nohup flatpak run com.obsproject.Studio >/tmp/codex-obs.log 2>&1 &"), timeout=12)})
+        command = gui_prefix(
+            "if command -v obs >/dev/null 2>&1; then "
+            "  launcher='obs'; "
+            "elif command -v flatpak >/dev/null 2>&1 && flatpak info com.obsproject.Studio >/dev/null 2>&1; then "
+            "  launcher='flatpak run com.obsproject.Studio'; "
+            "else "
+            "  echo 'OBS no esta instalado en el equipo remoto.' >&2; exit 14; "
+            "fi; nohup sh -lc \"$launcher\" >/tmp/codex-obs.log 2>&1 & sleep 2; pgrep -af 'obs|com.obsproject.Studio' >/dev/null"
+        )
+        return state_payload({"result": run_task("Abrir OBS", "remote_app", command, timeout=12)})
     if action == "close-obs":
         return state_payload({"result": run_task("Cerrar OBS", "remote_app", "pkill -x obs || true", timeout=10)})
     if action == "play-pause":
