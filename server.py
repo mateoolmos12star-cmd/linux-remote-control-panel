@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -199,6 +200,7 @@ terminal_sessions_lock = threading.Lock()
 gui_env_cache = {}
 current_connection = default_connection()
 recent_connections = load_recent_connections()
+SSH_EXE = shutil.which("ssh.exe") or shutil.which("ssh")
 
 
 def now():
@@ -527,72 +529,87 @@ def connection_disconnect():
     return state_payload({"terminal": {"open": False, "output": ""}, "result": {"reply": "Conexion cerrada."}})
 
 
-class TerminalSession:
+def build_terminal_session(connection):
+    resolved = resolve_connection(connection)
+    return CommandTerminalSession(resolved)
+
+
+class CommandTerminalSession:
     def __init__(self, connection):
-        self.connection = sanitize_connection(connection)
-        self.client = paramiko_client()
-        self.channel = self.client.invoke_shell(term="xterm-256color", width=120, height=34)
-        self.channel.settimeout(0.0)
+        self.connection = resolve_connection(connection)
+        self.client = paramiko_client(self.connection)
+        self.channel = self.client.invoke_shell(width=120, height=34, term="xterm-256color")
+        self.channel.settimeout(0.2)
         self.buffer = ""
         self.lock = threading.Lock()
         self.alive = True
         self.last_used_at = time.time()
-        time.sleep(0.15)
-        self._pump()
-
-    def _pump(self):
-        if not self.alive:
-            return ""
-        chunks = []
-        while self.channel.recv_ready():
-            data = self.channel.recv(4096)
-            if not data:
-                self.alive = False
-                break
-            chunks.append(data.decode("utf-8", errors="replace"))
-        if self.channel.closed or self.channel.exit_status_ready():
-            self.alive = False
-        if chunks:
-            text = "".join(chunks)
-            self.buffer += text
-            self.last_used_at = time.time()
-            return text
-        return ""
+        self._reader = threading.Thread(target=self._pump, daemon=True)
+        self._reader.start()
 
     def read(self):
         with self.lock:
-            self._pump()
             text = self.buffer
             self.buffer = ""
             return text
 
-    def write(self, text):
+    def _append(self, text):
+        if not text:
+            return
         with self.lock:
-            if not self.alive:
-                raise RuntimeError("La terminal remota ya no esta activa.")
-            self.channel.send(text)
-            self.last_used_at = time.time()
-            return self._pump()
+            self.buffer += text
+
+    def _pump(self):
+        try:
+            while self.alive:
+                if self.channel.recv_ready():
+                    data = self.channel.recv(4096)
+                    if not data:
+                        break
+                    self._append(data.decode("utf-8", errors="replace"))
+                    self.last_used_at = time.time()
+                    continue
+                if self.channel.recv_stderr_ready():
+                    data = self.channel.recv_stderr(4096)
+                    if data:
+                        self._append(data.decode("utf-8", errors="replace"))
+                        self.last_used_at = time.time()
+                        continue
+                if self.channel.closed or self.channel.exit_status_ready():
+                    break
+                time.sleep(0.05)
+        except Exception as exc:
+            self._append(f"\n[terminal error] {exc}\n")
+        finally:
+            self.alive = False
+
+    def write(self, text):
+        if not self.alive:
+            raise RuntimeError("La terminal remota ya no esta activa.")
+        payload = text.replace("\r\n", "\n").replace("\r", "\n")
+        self.channel.send(payload)
+        self.last_used_at = time.time()
+        time.sleep(0.12)
+        return self.read()
 
     def resize(self, cols, rows):
-        with self.lock:
-            if not self.alive:
-                return
+        if not self.alive:
+            return
+        try:
             self.channel.resize_pty(width=max(40, int(cols)), height=max(12, int(rows)))
-            self.last_used_at = time.time()
+        except Exception:
+            pass
 
     def close(self):
-        with self.lock:
-            if self.alive:
-                try:
-                    self.channel.close()
-                except Exception:
-                    pass
-                try:
-                    self.client.close()
-                except Exception:
-                    pass
-            self.alive = False
+        self.alive = False
+        try:
+            self.channel.close()
+        except Exception:
+            pass
+        try:
+            self.client.close()
+        except Exception:
+            pass
 
 
 def get_terminal_session(create=False):
@@ -606,7 +623,7 @@ def get_terminal_session(create=False):
             terminal_sessions.pop(key, None)
             session = None
         if not session and create:
-            session = TerminalSession(current_connection)
+            session = build_terminal_session(current_connection)
             terminal_sessions[key] = session
         return session
 
@@ -616,6 +633,7 @@ def terminal_open(cols=120, rows=34):
     if not session:
         raise RuntimeError("No hay conexion SSH activa.")
     session.resize(cols, rows)
+    time.sleep(0.15)
     output = session.read()
     return state_payload({"terminal": {"open": True, "output": output}})
 
@@ -644,7 +662,7 @@ def terminal_resize(cols, rows):
 
 def terminal_close():
     with terminal_sessions_lock:
-        session = terminal_sessions.pop(REMOTE_HOST, None)
+        session = terminal_sessions.pop(connection_key(), None)
     if session:
         session.close()
     return state_payload({"terminal": {"open": False, "output": ""}, "result": {"reply": "Terminal remota cerrada."}})

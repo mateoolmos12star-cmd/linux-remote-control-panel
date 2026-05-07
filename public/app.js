@@ -277,7 +277,7 @@ async function terminalAction(action, payload = {}, button = null) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Error desconocido");
     state = { ...state, ...data };
-    if (data.terminal?.output) appendTerminalOutput(data.terminal.output);
+    if (typeof data.terminal?.output === "string") appendTerminalOutput(data.terminal.output);
     if (typeof data.terminal?.open === "boolean") state.terminalOpen = data.terminal.open;
     render();
   } catch (error) {
@@ -692,4 +692,4 @@ mediaPoll = setInterval(() => {
   if (!state.connected) return;
   runAction("media-status");
 }, 12000);
-terminalPoll = setInterval(pollTerminal, 900);
+terminalPoll = setInterval(pollTerminal, 120);
